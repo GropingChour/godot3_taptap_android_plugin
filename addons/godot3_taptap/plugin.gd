@@ -5,7 +5,7 @@ extends EditorPlugin
 var config_window
 
 func _enter_tree() -> void:
-	add_autoload_singleton("TapTap", "res://addons/godot3-taptap/taptap.gd")
+	add_autoload_singleton("TapTap", "res://addons/godot3_taptap/taptap.gd")
 	
 	# 添加工具菜单项
 	add_tool_menu_item("TapTap RSA 密钥配置", self, "_open_config_window")
@@ -27,7 +27,7 @@ func _open_config_window(user_data = null) -> void:
 		return
 	
 	# 创建配置窗口
-	var config_script = load("res://addons/godot3-taptap/taptap_config_window.gd")
+	var config_script = load("res://addons/godot3_taptap/taptap_config_window.gd")
 	config_window = config_script.new()
 	if not config_window:
 		print("❌ 无法创建配置窗口")

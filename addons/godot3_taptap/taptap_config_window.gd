@@ -15,6 +15,7 @@ var save_key_btn
 # 密钥文件路径
 const KEY_FILE_PATH_RAW = "res://android/build/Godot3TapTap/src/main/res/raw/taptap_decrypt_key.txt"
 const KEY_FILE_PATH_XML = "res://android/build/Godot3TapTap/src/main/res/values/taptap_keys.xml"
+const KEY_FILE_PATH_IOS_PLIST = "res://ios_plugins/godot3_taptap/info.plist"
 
 # 当前加密密钥（从文件读取或默认值）
 var current_key = "TapTapz9mdoNZSItSxJOvG"
@@ -31,12 +32,16 @@ func _setup_ui():
 	_create_ui()
 
 func _load_or_create_key():
-	"""加载密钥文件，如果不存在则创建默认密钥"""
-	# 先尝试从 XML 文件读取
+	# 加载密钥文件，如果不存在则创建默认密钥
+	# 先尝试从 iOS plist 读取
+	if _load_key_from_ios_plist():
+		return
+	
+	# 再尝试从 XML 文件读取
 	if _load_key_from_xml():
 		return
 	
-	# 再尝试从 RAW 文件读取
+	# 最后尝试从 RAW 文件读取
 	if _load_key_from_raw():
 		return
 	
@@ -45,7 +50,7 @@ func _load_or_create_key():
 	print("创建默认密钥文件")
 
 func _load_key_from_xml() -> bool:
-	"""从 XML 文件读取密钥"""
+	# 从 XML 文件读取密钥
 	var file = File.new()
 	var xml_path = ProjectSettings.globalize_path(KEY_FILE_PATH_XML)
 	
@@ -65,7 +70,7 @@ func _load_key_from_xml() -> bool:
 	return false
 
 func _load_key_from_raw() -> bool:
-	"""从 RAW 文件读取密钥"""
+	# 从 RAW 文件读取密钥
 	var file = File.new()
 	var raw_path = ProjectSettings.globalize_path(KEY_FILE_PATH_RAW)
 	
@@ -82,6 +87,26 @@ func _load_key_from_raw() -> bool:
 					current_key = line
 					print("从 RAW 文件读取密钥：", current_key)
 					return true
+	return false
+
+func _load_key_from_ios_plist() -> bool:
+	# 从 iOS Info.plist 文件读取密钥
+	var file = File.new()
+	var plist_path = ProjectSettings.globalize_path(KEY_FILE_PATH_IOS_PLIST)
+	
+	if file.file_exists(plist_path):
+		if file.open(plist_path, File.READ) == OK:
+			var content = file.get_as_text()
+			file.close()
+			
+			# 解析 plist 内容，提取 TapTapDecryptKey
+			var regex = RegEx.new()
+			regex.compile('<key>TapTapDecryptKey</key>\\s*<string>([^<]+)</string>')
+			var result = regex.search(content)
+			if result:
+				current_key = result.get_string(1)
+				print("从 iOS Info.plist 读取密钥：", current_key)
+				return true
 	return false
 
 func _create_ui():
@@ -109,7 +134,7 @@ func _create_ui():
 	vbox.add_child(token_group)
 
 func _create_key_section():
-	"""创建密钥配置区域"""
+	# 创建密钥配置区域
 	var group = VBoxContainer.new()
 	group.add_constant_override("separation", 5)
 	
@@ -137,23 +162,34 @@ func _create_key_section():
 	generate_key_btn.connect("pressed", self, "_on_generate_key_pressed")
 	key_buttons.add_child(generate_key_btn)
 	
-	save_key_btn = Button.new()
-	save_key_btn.text = "💾 保存密钥"
-	save_key_btn.connect("pressed", self, "_on_save_key_pressed")
-	key_buttons.add_child(save_key_btn)
-	
 	group.add_child(key_buttons)
+	
+	# 平台保存按钮
+	var platform_buttons = HBoxContainer.new()
+	platform_buttons.add_constant_override("separation", 10)
+	
+	var save_ios_btn = Button.new()
+	save_ios_btn.text = "💾 保存到 iOS"
+	save_ios_btn.connect("pressed", self, "_on_save_ios_pressed")
+	platform_buttons.add_child(save_ios_btn)
+	
+	var save_android_btn = Button.new()
+	save_android_btn.text = "💾 保存到 Android"
+	save_android_btn.connect("pressed", self, "_on_save_android_pressed")
+	platform_buttons.add_child(save_android_btn)
+	
+	group.add_child(platform_buttons)
 	
 	# 密钥文件路径显示
 	var key_path_label = Label.new()
-	key_path_label.text = "密钥文件位置: " + ProjectSettings.globalize_path(KEY_FILE_PATH_XML) + " (XML) / " + ProjectSettings.globalize_path(KEY_FILE_PATH_RAW) + " (RAW)"
+	key_path_label.text = "密钥文件位置:\n• iOS: " + ProjectSettings.globalize_path(KEY_FILE_PATH_IOS_PLIST) + "\n• Android XML: " + ProjectSettings.globalize_path(KEY_FILE_PATH_XML) + "\n• Android RAW: " + ProjectSettings.globalize_path(KEY_FILE_PATH_RAW)
 	key_path_label.autowrap = true
 	group.add_child(key_path_label)
 	
 	return group
 
 func _create_token_section():
-	"""创建 Token 加密区域"""
+	# 创建 Token 加密区域
 	var group = VBoxContainer.new()
 	group.add_constant_override("separation", 5)
 	
@@ -203,7 +239,7 @@ func _create_token_section():
 	return group
 
 func _on_generate_key_pressed():
-	"""生成随机密钥"""
+	# 生成随机密钥
 	var crypto = Crypto.new()
 	var random_bytes = crypto.generate_random_bytes(16)
 	var new_key = "TapTap" + Marshalls.raw_to_base64(random_bytes).replace("=", "").replace("/", "").replace("+", "").substr(0, 16)
@@ -211,27 +247,44 @@ func _on_generate_key_pressed():
 	key_input.text = new_key
 	status_label.text = "✅ 已生成随机密钥，记得保存！"
 
-func _on_save_key_pressed():
-	"""保存密钥到文件"""
+func _on_save_ios_pressed():
+	# 保存密钥到 iOS
 	var new_key = key_input.text.strip_edges()
 	if new_key.empty():
 		status_label.text = "❌ 密钥不能为空"
 		return
 	
-	if _save_key_to_files(new_key):
+	if _save_key_to_ios_plist(new_key):
 		current_key = new_key
-		status_label.text = "✅ 密钥已保存到文件"
+		status_label.text = "✅ 密钥已保存到 iOS Info.plist"
 	else:
-		status_label.text = "❌ 保存密钥失败"
+		status_label.text = "❌ 保存 iOS 密钥失败"
+
+func _on_save_android_pressed():
+	# 保存密钥到 Android
+	var new_key = key_input.text.strip_edges()
+	if new_key.empty():
+		status_label.text = "❌ 密钥不能为空"
+		return
+	
+	var xml_success = _save_key_to_xml(new_key)
+	var raw_success = _save_key_to_raw(new_key)
+	
+	if xml_success or raw_success:
+		current_key = new_key
+		status_label.text = "✅ 密钥已保存到 Android 资源文件"
+	else:
+		status_label.text = "❌ 保存 Android 密钥失败"
 
 func _save_key_to_files(key: String) -> bool:
-	"""保存密钥到 XML 和 RAW 文件"""
+	# 保存密钥到所有平台文件 (内部使用)
+	var ios_success = _save_key_to_ios_plist(key)
 	var xml_success = _save_key_to_xml(key)
 	var raw_success = _save_key_to_raw(key)
-	return xml_success or raw_success
+	return ios_success or xml_success or raw_success
 
 func _save_key_to_xml(key: String) -> bool:
-	"""保存密钥到 XML 文件"""
+	# 保存密钥到 XML 文件
 	var file = File.new()
 	var xml_path = ProjectSettings.globalize_path(KEY_FILE_PATH_XML)
 	
@@ -258,7 +311,7 @@ func _save_key_to_xml(key: String) -> bool:
 		return false
 
 func _save_key_to_raw(key: String) -> bool:
-	"""保存密钥到 RAW 文件"""
+	# 保存密钥到 RAW 文件
 	var file = File.new()
 	var raw_path = ProjectSettings.globalize_path(KEY_FILE_PATH_RAW)
 	
@@ -279,6 +332,74 @@ func _save_key_to_raw(key: String) -> bool:
 		return true
 	else:
 		print("无法保存 RAW 密钥文件")
+		return false
+
+func _save_key_to_ios_plist(key: String) -> bool:
+	# 保存密钥到 iOS Info.plist 文件
+	var file = File.new()
+	var plist_path = ProjectSettings.globalize_path(KEY_FILE_PATH_IOS_PLIST)
+	
+	# 确保目录存在
+	var dir = Directory.new()
+	var dir_path = plist_path.get_base_dir()
+	if not dir.dir_exists(dir_path):
+		if dir.make_dir_recursive(dir_path) != OK:
+			print("无法创建目录：", dir_path)
+			return false
+	
+	# 检查文件是否存在
+	var content = ""
+	var has_key = false
+	
+	if file.file_exists(plist_path):
+		# 读取现有内容
+		if file.open(plist_path, File.READ) == OK:
+			content = file.get_as_text()
+			file.close()
+			
+			# 检查是否已有 TapTapDecryptKey
+			var regex = RegEx.new()
+			regex.compile('<key>TapTapDecryptKey</key>\\s*<string>([^<]+)</string>')
+			var result = regex.search(content)
+			
+			if result:
+				# 替换现有密钥
+				has_key = true
+				content = regex.sub(content, '<key>TapTapDecryptKey</key>\n\t<string>' + key + '</string>')
+		else:
+			print("iOS Info.plist 不存在，将创建新文件")
+	
+	# 如果文件不存在或没有密钥，需要添加密钥
+	if not has_key:
+		if content.empty():
+			# 创建新的 plist 文件
+			content = """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+\t<key>TapTapDecryptKey</key>
+\t<string>""" + key + """</string>
+</dict>
+</plist>
+"""
+		else:
+			# 在现有 plist 中插入密钥（在 </dict> 之前）
+			var dict_end_pos = content.rfind("</dict>")
+			if dict_end_pos > 0:
+				var insert_text = "\t<key>TapTapDecryptKey</key>\n\t<string>" + key + "</string>\n"
+				content = content.insert(dict_end_pos, insert_text)
+			else:
+				print("无法解析 iOS Info.plist 格式")
+				return false
+	
+	# 写入文件
+	if file.open(plist_path, File.WRITE) == OK:
+		file.store_string(content)
+		file.close()
+		print("密钥已保存到 iOS Info.plist：", plist_path)
+		return true
+	else:
+		print("无法保存 iOS Info.plist 文件")
 		return false
 
 func _on_encrypt_pressed():
@@ -302,7 +423,7 @@ func _on_encrypt_pressed():
 	status_label.text = "✅ 加密完成！使用方法：TapTap.initSdkWithEncryptedToken(\"" + encrypted_base64 + "\", clientId, false)"
 
 func _simple_encrypt(text: String) -> PoolByteArray:
-	"""简单的 XOR 加密"""
+	# 简单的 XOR 加密
 	var text_bytes = text.to_utf8()
 	var key_bytes = current_key.to_utf8()
 	var result = PoolByteArray()
