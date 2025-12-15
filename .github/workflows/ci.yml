@@ -24,22 +24,15 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x android/gradlew
     
-    - name: Build Godot3TapTap module
+    - name: Build and deploy Godot3TapTap module
       working-directory: ./android
       run: ./gradlew :Godot3TapTap:assembleRelease
+      # Note: This automatically copies AAR and GDAP to release/android/plugins via copyAarToPlugins task
     
-    - name: Prepare release directory
+    - name: Copy addons folder to release
       run: |
-        mkdir -p release/android/plugins
         mkdir -p release/addons
-    
-    - name: Copy AAR and GDAP files
-      run: |
-        cp android/Godot3TapTap/build/outputs/aar/Godot3TapTap-release.aar release/android/plugins/Godot3TapTap.aar
-        cp android/Godot3TapTap/Godot3TapTap.gdap release/android/plugins/
-    
-    - name: Copy addons folder
-      run: cp -r addons/* release/addons/
+        cp -r addons/* release/addons/
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
