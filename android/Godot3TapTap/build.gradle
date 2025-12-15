@@ -1,0 +1,116 @@
+import com.android.build.gradle.tasks.BundleAar
+
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'com.sygames.godot3taptap'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 21
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles "consumer-rules.pro"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+
+    implementation libs.androidx.appcompat
+    implementation libs.material
+    compileOnly files('../libs/release/godot-lib.release.aar')
+    testImplementation libs.junit
+    androidTestImplementation libs.androidx.junit
+    androidTestImplementation libs.androidx.espresso.core
+
+    // TapTap SDK dependency
+    implementation 'com.taptap.sdk:tap-core:4.9.2'
+    implementation 'com.taptap.sdk:tap-compliance:4.9.2'
+    implementation 'com.taptap.sdk:tap-login:4.9.2'
+    implementation 'com.taptap.sdk:tap-license:4.9.2'
+
+    // TapTapIAP dependency
+    implementation 'com.taptap.android.payment:iap:4.9.2'
+    implementation 'com.taptap.android.payment:base:4.9.2'
+    implementation 'com.taptap.android.payment:wechat:4.9.2'
+    implementation 'com.taptap.android.payment:alipaycn:4.9.2'
+
+    // 需添加json解析对应依赖
+    implementation libs.kotlinx.serialization.json
+}
+
+// 添加后处理任务：复制生成的 AAR 到 plugins 目录
+tasks.register('copyAarToPlugins', Copy) {
+    description = 'Copy generated AAR files and gdap to android/plugins directory'
+    group = 'build'
+
+    from "$buildDir/outputs/aar"
+    into "../../release/android/plugins"
+    include "Godot3TapTap-*.aar"
+
+    // 处理重复文件 - 用新文件覆盖旧文件
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+
+    rename { filename ->
+        // 将所有变体的 AAR 文件重命名为统一的名称
+        if (filename.startsWith("Godot3TapTap-") && filename.endsWith(".aar")) {
+            return "Godot3TapTap.aar"
+        }
+        return filename
+    }
+
+    doLast {
+        // 复制 .gdap 文件
+        def gdapFile = file("Godot3TapTap.gdap")
+        def gdapDest = file("../../release/android/plugins/Godot3TapTap.gdap")
+        if (gdapFile.exists()) {
+            gdapDest.parentFile.mkdirs()
+            gdapDest.bytes = gdapFile.bytes
+            println "GDAP file copied to android/plugins/Godot3TapTap.gdap (${gdapFile.size()} bytes)"
+        }
+
+        println "AAR files copied to android/plugins/Godot3TapTap.aar"
+
+        // 输出复制的文件信息
+        fileTree("../../release/android/plugins") {
+            include "Godot3TapTap.aar"
+        }.visit { file ->
+            if (!file.isDirectory()) {
+                println "Updated: ${file.relativePath} (${file.size} bytes)"
+            }
+        }
+    }
+}
+
+// 让相关构建任务自动执行复制任务
+tasks.matching { task ->
+    task.name.startsWith('assemble') || task.name == 'build'
+}.configureEach { task ->
+    task.finalizedBy copyAarToPlugins
+}
+
+// 确保在生成 AAR 后立即复制
+tasks.withType(BundleAar).configureEach {
+    finalizedBy copyAarToPlugins
+}
+
+// 添加一个便捷的独立任务用于手动复制
+tasks.register('deployAar') {
+    description = 'Build and deploy AAR to plugins directory'
+    group = 'deployment'
+    dependsOn assemble
+    finalizedBy copyAarToPlugins
+}

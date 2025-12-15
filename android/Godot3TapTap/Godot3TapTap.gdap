@@ -1,0 +1,18 @@
+[config]
+
+name="Godot3TapTap"
+binary_type="local"
+binary="Godot3TapTap.aar"
+
+[dependencies]
+remote=[
+        "com.taptap.sdk:tap-core:4.9.2",
+        "com.taptap.sdk:tap-compliance:4.9.2",
+        "com.taptap.sdk:tap-login:4.9.2",
+        "com.taptap.sdk:tap-license:4.9.2",
+        "com.taptap.android.payment:iap:4.9.2",
+        "com.taptap.android.payment:base:4.9.2",
+        "com.taptap.android.payment:wechat:4.9.2",
+        "com.taptap.android.payment:alipaycn:4.9.2",
+        "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
+    ]

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- TapTap 加密密钥 -->
+    <string name="taptap_decrypt_key">TapTap73sev5b6P5eZxAy2</string>
+</resources>
