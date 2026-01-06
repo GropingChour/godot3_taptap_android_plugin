@@ -32,6 +32,11 @@ import com.taptap.sdk.compliance.option.TapTapComplianceOptions;
 import com.taptap.sdk.license.TapTapLicense;
 import com.taptap.sdk.license.TapTapLicenseCallback;
 import com.taptap.sdk.license.TapTapDLCCallback;
+import com.taptap.sdk.cloudsave.TapTapCloudSave;
+import com.taptap.sdk.cloudsave.internal.TapCloudSaveCallback;
+import com.taptap.sdk.cloudsave.internal.TapCloudSaveRequestCallback;
+import com.taptap.sdk.cloudsave.ArchiveMetadata;
+import com.taptap.sdk.cloudsave.ArchiveData;
 
 import org.godotengine.godot.Godot;
 import org.godotengine.godot.plugin.GodotPlugin;
@@ -68,6 +73,7 @@ import android.app.Activity;
  * - 内购(IAP)功能
  * - 合规认证
  * - 版权验证
+ * - 云存档
  * <p>
  * 官方文档：
  *
@@ -77,6 +83,7 @@ import android.app.Activity;
  * @see <a href="https://developer.taptap.cn/docs/sdk/tap-iap/develop/android/">内购系统</a>
  * @see <a href="https://developer.taptap.cn/docs/sdk/compliance/features/">合规认证</a>
  * @see <a href="https://developer.taptap.cn/docs/sdk/copyright-verification/guide/">版权验证</a>
+ * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/">云存档</a>
  * <p>
  * 使用流程：
  * 1. 调用 initSdk() 初始化SDK
@@ -97,6 +104,19 @@ import android.app.Activity;
  * - onFinishPurchaseResponse: 完成订单结果
  * - onQueryUnfinishedPurchaseResponse: 未完成订单查询结果
  * - onLaunchBillingFlowResult: 启动购买流程结果
+ * - onCloudSaveCallback: 云存档统一状态回调
+ * - onCreateArchiveSuccess: 创建存档成功
+ * - onCreateArchiveFailed: 创建存档失败
+ * - onGetArchiveListSuccess: 获取存档列表成功
+ * - onGetArchiveListFailed: 获取存档列表失败
+ * - onGetArchiveDataSuccess: 下载存档数据成功
+ * - onGetArchiveDataFailed: 下载存档数据失败
+ * - onUpdateArchiveSuccess: 更新存档成功
+ * - onUpdateArchiveFailed: 更新存档失败
+ * - onDeleteArchiveSuccess: 删除存档成功
+ * - onDeleteArchiveFailed: 删除存档失败
+ * - onGetArchiveCoverSuccess: 获取存档封面成功
+ * - onGetArchiveCoverFailed: 获取存档封面失败
  */
 public class Godot3TapTap extends GodotPlugin {
     private TapTapIAP tapTapIAP = null;
@@ -109,6 +129,13 @@ public class Godot3TapTap extends GodotPlugin {
     private final TapTapLicenseCallback licenseCallback = () -> {
         Log.d("TapSDKBridge", "License verification success");
         emitSignal("onLicenseSuccess");
+    };
+
+    // CloudSave统一状态监听
+    // 用于接收SDK级别的状态通知（300001:需要登录, 300002:初始化失败）
+    private final TapCloudSaveCallback cloudSaveCallback = resultCode -> {
+        Log.d("TapSDKBridge", "CloudSave status callback: " + resultCode);
+        emitSignal("onCloudSaveCallback", resultCode);
     };
 
     // DLC callback implementation
@@ -174,7 +201,22 @@ public class Godot3TapTap extends GodotPlugin {
                 new SignalInfo("onPurchaseUpdated", String.class),
                 new SignalInfo("onFinishPurchaseResponse", String.class),
                 new SignalInfo("onQueryUnfinishedPurchaseResponse", String.class),
-                new SignalInfo("onLaunchBillingFlowResult", String.class)
+                new SignalInfo("onLaunchBillingFlowResult", String.class),
+
+                // CloudSave signals - json
+                new SignalInfo("onCloudSaveCallback", Integer.class),
+                new SignalInfo("onCreateArchiveSuccess", String.class),
+                new SignalInfo("onCreateArchiveFailed", String.class),
+                new SignalInfo("onGetArchiveListSuccess", String.class),
+                new SignalInfo("onGetArchiveListFailed", String.class),
+                new SignalInfo("onGetArchiveDataSuccess", String.class),
+                new SignalInfo("onGetArchiveDataFailed", String.class),
+                new SignalInfo("onUpdateArchiveSuccess", String.class),
+                new SignalInfo("onUpdateArchiveFailed", String.class),
+                new SignalInfo("onDeleteArchiveSuccess", String.class),
+                new SignalInfo("onDeleteArchiveFailed", String.class),
+                new SignalInfo("onGetArchiveCoverSuccess", String.class),
+                new SignalInfo("onGetArchiveCoverFailed", String.class)
         );
     }
 
@@ -332,6 +374,10 @@ public class Godot3TapTap extends GodotPlugin {
         // 注册DLC回调
         Log.d("TapSDKBridge", "Registering DLC callback");
         TapTapLicense.registerDLCCallback(dlcCallback);
+
+        // 注册云存档统一状态码监听
+        Log.d("TapSDKBridge", "Registering CloudSave status callback");
+        TapTapCloudSave.registerCloudSaveCallback(cloudSaveCallback);
 
         if (withIAP) {
             tapTapIAP = TapTapIAP.newBuilder().build();
@@ -999,6 +1045,533 @@ public class Godot3TapTap extends GodotPlugin {
     @UsedByGodot
     public void showTip(String text) {
         runOnUiThread(() -> Toast.makeText(getActivity(), text, Toast.LENGTH_SHORT).show());
+    }
+
+    // ==================== 云存档相关方法 ====================
+
+    /**
+     * 创建游戏存档并上传云端
+     * <p>
+     * 注意：
+     * - 存档名称仅支持【英文/数字/下划线/中划线】，不支持中文
+     * - 存档摘要 (summary) 以及额外信息 (extra) 无此限制
+     * - 一分钟内仅可调用一次（与更新存档共享冷却时间）
+     * - 单个存档文件大小不超过10MB
+     * - 封面大小不超过512KB
+     * <p>
+     *
+     * @param archiveName        存档名称
+     * @param archiveSummary     存档摘要/描述
+     * @param archiveExtra       额外信息
+     * @param archivePlaytime    游戏时长（秒）
+     * @param archiveFilePath    存档文件路径
+     * @param archiveCoverPath   存档封面路径（可选，可为null）
+     *                           <p>
+     *                           触发信号：
+     *                           - onCreateArchiveSuccess: 创建成功，参数为存档信息的JSON字符串
+     *                           - onCreateArchiveFailed: 创建失败，参数为错误信息的JSON字符串
+     * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#创建存档">创建存档文档</a>
+     */
+    @UsedByGodot
+    public void createArchive(String archiveName, String archiveSummary, String archiveExtra,
+                              long archivePlaytime, String archiveFilePath, @Nullable String archiveCoverPath) {
+        runOnMainThread(() -> {
+            try {
+                // 使用Builder模式创建元数据
+                ArchiveMetadata metadata = new ArchiveMetadata.Builder()
+                        .setName(archiveName)
+                        .setSummary(archiveSummary)
+                        .setExtra(archiveExtra)
+                        .setPlaytime((int) archivePlaytime)
+                        .build();
+
+                // 创建请求回调
+                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
+                    @Override
+                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("code", errorCode);
+                            json.put("message", errorMessage);
+                            emitSignal("onCreateArchiveFailed", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
+                            emitSignal("onCreateArchiveFailed", "{\"error\":\"" + errorMessage + "\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCreated(@NonNull ArchiveData archive) {
+                        try {
+                            JSONObject json = createArchiveDataJson(archive);
+                            emitSignal("onCreateArchiveSuccess", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create archive JSON", e);
+                            emitSignal("onCreateArchiveFailed", "{\"error\":\"JSON creation failed\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in createArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in createArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in createArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in createArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in createArchive context");
+                    }
+                };
+
+                TapTapCloudSave.createArchive(metadata, archiveFilePath, archiveCoverPath, callback);
+            } catch (Exception e) {
+                Log.e("TapSDKBridge", "Failed to create archive", e);
+                emitSignal("onCreateArchiveFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        });
+    }
+
+    /**
+     * 获取当前用户的存档列表
+     * <p>
+     * 触发信号：
+     * - onGetArchiveListSuccess: 获取成功，参数为存档列表的JSON字符串
+     * - onGetArchiveListFailed: 获取失败，参数为错误信息的JSON字符串
+     *
+     * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#获取存档列表">获取存档列表文档</a>
+     */
+    @UsedByGodot
+    public void getArchiveList() {
+        runOnMainThread(() -> {
+            try {
+                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
+                    @Override
+                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("code", errorCode);
+                            json.put("message", errorMessage);
+                            emitSignal("onGetArchiveListFailed", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
+                            emitSignal("onGetArchiveListFailed", "{\"error\":\"" + errorMessage + "\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCreated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in getArchiveList context");
+                    }
+
+                    @Override
+                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
+                        try {
+                            JSONArray jsonArray = new JSONArray();
+                            for (ArchiveData archive : archiveList) {
+                                jsonArray.put(createArchiveDataJson(archive));
+                            }
+                            emitSignal("onGetArchiveListSuccess", jsonArray.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create archive list JSON", e);
+                            emitSignal("onGetArchiveListFailed", "{\"error\":\"JSON creation failed\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in getArchiveList context");
+                    }
+
+                    @Override
+                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in getArchiveList context");
+                    }
+
+                    @Override
+                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in getArchiveList context");
+                    }
+
+                    @Override
+                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in getArchiveList context");
+                    }
+                };
+
+                TapTapCloudSave.getArchiveList(callback);
+            } catch (Exception e) {
+                Log.e("TapSDKBridge", "Failed to get archive list", e);
+                emitSignal("onGetArchiveListFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        });
+    }
+
+    /**
+     * 下载指定的存档文件
+     * <p>
+     *
+     * @param archiveUuid   存档UUID
+     * @param archiveFileId 存档文件ID
+     *                      <p>
+     *                      触发信号：
+     *                      - onGetArchiveDataSuccess: 下载成功，参数为Base64编码的存档数据JSON字符串
+     *                      - onGetArchiveDataFailed: 下载失败，参数为错误信息的JSON字符串
+     * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#下载存档">下载存档文档</a>
+     */
+    @UsedByGodot
+    public void getArchiveData(String archiveUuid, String archiveFileId) {
+        runOnMainThread(() -> {
+            try {
+                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
+                    @Override
+                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("code", errorCode);
+                            json.put("message", errorMessage);
+                            emitSignal("onGetArchiveDataFailed", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
+                            emitSignal("onGetArchiveDataFailed", "{\"error\":\"" + errorMessage + "\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCreated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in getArchiveData context");
+                    }
+
+                    @Override
+                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in getArchiveData context");
+                    }
+
+                    @Override
+                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("archiveUuid", archiveUuid);
+                            json.put("archiveFileId", archiveFileId);
+                            json.put("data", Base64.encodeToString(archiveData, Base64.NO_WRAP));
+                            json.put("size", archiveData.length);
+                            emitSignal("onGetArchiveDataSuccess", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create archive data JSON", e);
+                            emitSignal("onGetArchiveDataFailed", "{\"error\":\"JSON creation failed\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in getArchiveData context");
+                    }
+
+                    @Override
+                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in getArchiveData context");
+                    }
+
+                    @Override
+                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in getArchiveData context");
+                    }
+                };
+
+                TapTapCloudSave.getArchiveData(archiveUuid, archiveFileId, callback);
+            } catch (Exception e) {
+                Log.e("TapSDKBridge", "Failed to get archive data", e);
+                emitSignal("onGetArchiveDataFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        });
+    }
+
+    /**
+     * 更新指定的存档文件
+     * <p>
+     * 注意：
+     * - 存档名称仅支持【英文/数字/下划线/中划线】，不支持中文
+     * - 存档摘要 (summary) 以及额外信息 (extra) 无此限制
+     * - 一分钟内仅可调用一次（与创建存档共享冷却时间）
+     * - 单个存档文件大小不超过10MB
+     * - 封面大小不超过512KB
+     * <p>
+     *
+     * @param archiveUuid        存档UUID
+     * @param archiveName        存档名称
+     * @param archiveSummary     存档摘要/描述
+     * @param archiveExtra       额外信息
+     * @param archivePlaytime    游戏时长（秒）
+     * @param archiveFilePath    新的存档文件路径
+     * @param archiveCoverPath   新的存档封面路径（可选，可为null）
+     *                           <p>
+     *                           触发信号：
+     *                           - onUpdateArchiveSuccess: 更新成功，参数为存档信息的JSON字符串
+     *                           - onUpdateArchiveFailed: 更新失败，参数为错误信息的JSON字符串
+     * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#更新存档">更新存档文档</a>
+     */
+    @UsedByGodot
+    public void updateArchive(String archiveUuid, String archiveName, String archiveSummary,
+                              String archiveExtra, long archivePlaytime, String archiveFilePath,
+                              @Nullable String archiveCoverPath) {
+        runOnMainThread(() -> {
+            try {
+                // 使用Builder模式创建元数据
+                ArchiveMetadata metadata = new ArchiveMetadata.Builder()
+                        .setName(archiveName)
+                        .setSummary(archiveSummary)
+                        .setExtra(archiveExtra)
+                        .setPlaytime((int) archivePlaytime)
+                        .build();
+
+                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
+                    @Override
+                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("code", errorCode);
+                            json.put("message", errorMessage);
+                            emitSignal("onUpdateArchiveFailed", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
+                            emitSignal("onUpdateArchiveFailed", "{\"error\":\"" + errorMessage + "\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCreated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in updateArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in updateArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in updateArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
+                        try {
+                            JSONObject json = createArchiveDataJson(archive);
+                            emitSignal("onUpdateArchiveSuccess", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create archive JSON", e);
+                            emitSignal("onUpdateArchiveFailed", "{\"error\":\"JSON creation failed\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in updateArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in updateArchive context");
+                    }
+                };
+
+                TapTapCloudSave.updateArchive(archiveUuid, metadata, archiveFilePath, archiveCoverPath, callback);
+            } catch (Exception e) {
+                Log.e("TapSDKBridge", "Failed to update archive", e);
+                emitSignal("onUpdateArchiveFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        });
+    }
+
+    /**
+     * 删除指定的存档文件
+     * <p>
+     *
+     * @param archiveUuid 存档UUID
+     *                    <p>
+     *                    触发信号：
+     *                    - onDeleteArchiveSuccess: 删除成功，参数为存档信息的JSON字符串
+     *                    - onDeleteArchiveFailed: 删除失败，参数为错误信息的JSON字符串
+     * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#删除存档">删除存档文档</a>
+     */
+    @UsedByGodot
+    public void deleteArchive(String archiveUuid) {
+        runOnMainThread(() -> {
+            try {
+                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
+                    @Override
+                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("code", errorCode);
+                            json.put("message", errorMessage);
+                            emitSignal("onDeleteArchiveFailed", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
+                            emitSignal("onDeleteArchiveFailed", "{\"error\":\"" + errorMessage + "\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCreated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in deleteArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in deleteArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in deleteArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in deleteArchive context");
+                    }
+
+                    @Override
+                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
+                        try {
+                            JSONObject json = createArchiveDataJson(archive);
+                            emitSignal("onDeleteArchiveSuccess", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create archive JSON", e);
+                            emitSignal("onDeleteArchiveFailed", "{\"error\":\"JSON creation failed\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in deleteArchive context");
+                    }
+                };
+
+                TapTapCloudSave.deleteArchive(archiveUuid, callback);
+            } catch (Exception e) {
+                Log.e("TapSDKBridge", "Failed to delete archive", e);
+                emitSignal("onDeleteArchiveFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        });
+    }
+
+    /**
+     * 获取指定存档的封面图片
+     * <p>
+     *
+     * @param archiveUuid   存档UUID
+     * @param archiveFileId 存档文件ID
+     *                      <p>
+     *                      触发信号：
+     *                      - onGetArchiveCoverSuccess: 获取成功，参数为Base64编码的封面数据JSON字符串
+     *                      - onGetArchiveCoverFailed: 获取失败，参数为错误信息的JSON字符串
+     * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#获取存档封面">获取存档封面文档</a>
+     */
+    @UsedByGodot
+    public void getArchiveCover(String archiveUuid, String archiveFileId) {
+        runOnMainThread(() -> {
+            try {
+                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
+                    @Override
+                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("code", errorCode);
+                            json.put("message", errorMessage);
+                            emitSignal("onGetArchiveCoverFailed", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
+                            emitSignal("onGetArchiveCoverFailed", "{\"error\":\"" + errorMessage + "\"}");
+                        }
+                    }
+
+                    @Override
+                    public void onArchiveCreated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in getArchiveCover context");
+                    }
+
+                    @Override
+                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in getArchiveCover context");
+                    }
+
+                    @Override
+                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in getArchiveCover context");
+                    }
+
+                    @Override
+                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in getArchiveCover context");
+                    }
+
+                    @Override
+                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
+                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in getArchiveCover context");
+                    }
+
+                    @Override
+                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
+                        try {
+                            JSONObject json = new JSONObject();
+                            json.put("archiveUuid", archiveUuid);
+                            json.put("archiveFileId", archiveFileId);
+                            json.put("data", Base64.encodeToString(coverData, Base64.NO_WRAP));
+                            json.put("size", coverData.length);
+                            emitSignal("onGetArchiveCoverSuccess", json.toString());
+                        } catch (JSONException e) {
+                            Log.e("TapSDKBridge", "Failed to create cover JSON", e);
+                            emitSignal("onGetArchiveCoverFailed", "{\"error\":\"JSON creation failed\"}");
+                        }
+                    }
+                };
+
+                TapTapCloudSave.getArchiveCover(archiveUuid, archiveFileId, callback);
+            } catch (Exception e) {
+                Log.e("TapSDKBridge", "Failed to get archive cover", e);
+                emitSignal("onGetArchiveCoverFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        });
+    }
+
+    /**
+     * 创建ArchiveData对象的JSON表示
+     * 统一ArchiveData对象的序列化格式
+     *
+     * @param archive ArchiveData对象
+     * @return ArchiveData的JSON表示
+     * @throws JSONException 如果JSON创建失败
+     */
+    private JSONObject createArchiveDataJson(ArchiveData archive) throws JSONException {
+        JSONObject json = new JSONObject();
+        json.put("uuid", archive.getUuid());
+        json.put("name", archive.getName());
+        json.put("summary", archive.getSummary());
+        json.put("extra", archive.getExtra());
+        json.put("playtime", archive.getPlaytime());
+        json.put("fileId", archive.getFileId());
+        // 注意：以下字段根据实际SDK API可能需要调整
+        // 如果这些方法不存在，可以省略或使用其他可用的方法
+        // json.put("coverId", archive.getCoverId());
+        // json.put("modifiedAt", archive.getModifiedAt());
+        // json.put("createdAt", archive.getCreatedAt());
+        // json.put("size", archive.getSize());
+        return json;
     }
 
     /**

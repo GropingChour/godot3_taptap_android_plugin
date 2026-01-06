@@ -37,16 +37,17 @@ dependencies {
     androidTestImplementation libs.androidx.espresso.core
 
     // TapTap SDK dependency
-    implementation 'com.taptap.sdk:tap-core:4.9.2'
-    implementation 'com.taptap.sdk:tap-compliance:4.9.2'
-    implementation 'com.taptap.sdk:tap-login:4.9.2'
-    implementation 'com.taptap.sdk:tap-license:4.9.2'
+    implementation 'com.taptap.sdk:tap-core:4.9.3'
+    implementation 'com.taptap.sdk:tap-compliance:4.9.3'
+    implementation 'com.taptap.sdk:tap-login:4.9.3'
+    implementation 'com.taptap.sdk:tap-license:4.9.3'
+    implementation 'com.taptap.sdk:tap-cloudsave:4.9.3'
 
     // TapTapIAP dependency
-    implementation 'com.taptap.android.payment:iap:4.9.2'
-    implementation 'com.taptap.android.payment:base:4.9.2'
-    implementation 'com.taptap.android.payment:wechat:4.9.2'
-    implementation 'com.taptap.android.payment:alipaycn:4.9.2'
+    implementation 'com.taptap.android.payment:iap:4.9.3'
+    implementation 'com.taptap.android.payment:base:4.9.3'
+    implementation 'com.taptap.android.payment:wechat:4.9.3'
+    implementation 'com.taptap.android.payment:alipaycn:4.9.3'
 
     // 需添加json解析对应依赖
     implementation libs.kotlinx.serialization.json

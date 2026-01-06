@@ -8,6 +8,7 @@ extends Node
 # - DLC商品管理
 # - 内购(IAP)功能  
 # - 合规认证
+# - 云存档 (Cloud Save)
 #
 # 使用流程：
 # 1. 调用 initSdk() 或 initSdkWithEncryptedToken() 初始化SDK
@@ -29,6 +30,19 @@ extends Node
 # - onFinishPurchaseResponse: 完成订单结果
 # - onQueryUnfinishedPurchaseResponse: 未完成订单查询结果
 # - onLaunchBillingFlowResult: 启动购买流程结果
+# - onCloudSaveCallback: 云存档统一状态回调
+# - onCreateArchiveSuccess: 创建存档成功
+# - onCreateArchiveFailed: 创建存档失败
+# - onGetArchiveListSuccess: 获取存档列表成功
+# - onGetArchiveListFailed: 获取存档列表失败
+# - onGetArchiveDataSuccess: 下载存档数据成功
+# - onGetArchiveDataFailed: 下载存档数据失败
+# - onUpdateArchiveSuccess: 更新存档成功
+# - onUpdateArchiveFailed: 更新存档失败
+# - onDeleteArchiveSuccess: 删除存档成功
+# - onDeleteArchiveFailed: 删除存档失败
+# - onGetArchiveCoverSuccess: 获取存档封面成功
+# - onGetArchiveCoverFailed: 获取存档封面失败
 
 enum ComplianceMessage {
 	LOGIN_SUCCESS = 500, ## 玩家未受到限制，正常进入游戏
@@ -87,6 +101,20 @@ func _ready():
 		singleton.connect("onFinishPurchaseResponse", self, "_onFinishPurchaseResponse")
 		singleton.connect("onQueryUnfinishedPurchaseResponse", self, "_onQueryUnfinishedPurchaseResponse")
 		singleton.connect("onLaunchBillingFlowResult", self, "_onLaunchBillingFlowResult")
+		# CloudSave 云存档相关信号
+		singleton.connect("onCloudSaveCallback", self, "_onCloudSaveCallback")
+		singleton.connect("onCreateArchiveSuccess", self, "_onCreateArchiveSuccess")
+		singleton.connect("onCreateArchiveFailed", self, "_onCreateArchiveFailed")
+		singleton.connect("onGetArchiveListSuccess", self, "_onGetArchiveListSuccess")
+		singleton.connect("onGetArchiveListFailed", self, "_onGetArchiveListFailed")
+		singleton.connect("onGetArchiveDataSuccess", self, "_onGetArchiveDataSuccess")
+		singleton.connect("onGetArchiveDataFailed", self, "_onGetArchiveDataFailed")
+		singleton.connect("onUpdateArchiveSuccess", self, "_onUpdateArchiveSuccess")
+		singleton.connect("onUpdateArchiveFailed", self, "_onUpdateArchiveFailed")
+		singleton.connect("onDeleteArchiveSuccess", self, "_onDeleteArchiveSuccess")
+		singleton.connect("onDeleteArchiveFailed", self, "_onDeleteArchiveFailed")
+		singleton.connect("onGetArchiveCoverSuccess", self, "_onGetArchiveCoverSuccess")
+		singleton.connect("onGetArchiveCoverFailed", self, "_onGetArchiveCoverFailed")
 		print(PLUGIN_NAME, " ready")
 	else:
 		print(PLUGIN_NAME, " load fail")
@@ -634,3 +662,316 @@ func _temp_on_product_details(response_data: Dictionary, product_id: String, ord
 #
 # # 13. 合规认证（登录成功后调用）
 # TapTap.compliance()
+
+# ==================== 云存档相关方法 ====================
+
+# 云存档错误码
+enum CloudSaveResultCode {
+	NEED_LOGIN = 300001,  # 需要登录
+	INIT_FAILED = 300002  # 初始化失败，需要重新初始化
+}
+
+enum CloudSaveErrorCode {
+	INVALID_FILE_SIZE = 400000,  # 非法的存档文件/封面大小
+	UPLOAD_LIMIT = 400001,  # 存档上传频率超限
+	ARCHIVE_NOT_FOUND = 400002,  # 指定的存档不存在
+	ARCHIVE_COUNT_LIMIT = 400003,  # 单个应用下存档数量超限
+	APP_STORAGE_LIMIT = 400004,  # 单个应用下使用存储空间超限
+	TOTAL_STORAGE_LIMIT = 400005,  # 总使用存储空间超限
+	INVALID_TOKEN = 400006,  # 非法的操作令牌，通常是由于网络卡顿
+	CONCURRENT_CALL = 400007,  # 不允许并发调用
+	OSS_PROVIDER_NOT_FOUND = 400008,  # 找不到可用的 OSS 供应商
+	INVALID_ARCHIVE_NAME = 400009  # 存档名称不合法
+}
+
+# ==================== 云存档回调信号 ====================
+
+signal onCloudSaveCallback(result_code)
+func _onCloudSaveCallback(resultCode: int):
+	# 云存档统一状态回调
+	emit_signal("onCloudSaveCallback", resultCode)
+
+signal onCreateArchiveSuccess(archive_data)
+func _onCreateArchiveSuccess(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onCreateArchiveSuccess", json.result)
+	else:
+		emit_signal("onCreateArchiveSuccess", {"error": json.error_string})
+
+signal onCreateArchiveFailed(error_data)
+func _onCreateArchiveFailed(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onCreateArchiveFailed", json.result)
+	else:
+		emit_signal("onCreateArchiveFailed", {"error": json.error_string})
+
+signal onGetArchiveListSuccess(archives)
+func _onGetArchiveListSuccess(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onGetArchiveListSuccess", json.result)
+	else:
+		emit_signal("onGetArchiveListSuccess", [])
+
+signal onGetArchiveListFailed(error_data)
+func _onGetArchiveListFailed(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onGetArchiveListFailed", json.result)
+	else:
+		emit_signal("onGetArchiveListFailed", {"error": json.error_string})
+
+signal onGetArchiveDataSuccess(archive_data)
+func _onGetArchiveDataSuccess(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onGetArchiveDataSuccess", json.result)
+	else:
+		emit_signal("onGetArchiveDataSuccess", {"error": json.error_string})
+
+signal onGetArchiveDataFailed(error_data)
+func _onGetArchiveDataFailed(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onGetArchiveDataFailed", json.result)
+	else:
+		emit_signal("onGetArchiveDataFailed", {"error": json.error_string})
+
+signal onUpdateArchiveSuccess(archive_data)
+func _onUpdateArchiveSuccess(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onUpdateArchiveSuccess", json.result)
+	else:
+		emit_signal("onUpdateArchiveSuccess", {"error": json.error_string})
+
+signal onUpdateArchiveFailed(error_data)
+func _onUpdateArchiveFailed(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onUpdateArchiveFailed", json.result)
+	else:
+		emit_signal("onUpdateArchiveFailed", {"error": json.error_string})
+
+signal onDeleteArchiveSuccess(archive_data)
+func _onDeleteArchiveSuccess(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onDeleteArchiveSuccess", json.result)
+	else:
+		emit_signal("onDeleteArchiveSuccess", {"error": json.error_string})
+
+signal onDeleteArchiveFailed(error_data)
+func _onDeleteArchiveFailed(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onDeleteArchiveFailed", json.result)
+	else:
+		emit_signal("onDeleteArchiveFailed", {"error": json.error_string})
+
+signal onGetArchiveCoverSuccess(cover_data)
+func _onGetArchiveCoverSuccess(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onGetArchiveCoverSuccess", json.result)
+	else:
+		emit_signal("onGetArchiveCoverSuccess", {"error": json.error_string})
+
+signal onGetArchiveCoverFailed(error_data)
+func _onGetArchiveCoverFailed(jsonString: String):
+	var json = JSON.parse(jsonString)
+	if json.error == OK:
+		emit_signal("onGetArchiveCoverFailed", json.result)
+	else:
+		emit_signal("onGetArchiveCoverFailed", {"error": json.error_string})
+
+# ==================== 云存档 API 方法 ====================
+
+func createArchive(archiveName: String, archiveSummary: String, archiveExtra: String, 
+				   archivePlaytime: int, archiveFilePath: String, archiveCoverPath: String = "") -> void:
+	# 创建游戏存档并上传云端
+	#
+	# 注意：
+	# - 存档名称仅支持【英文/数字/下划线/中划线】，不支持中文
+	# - 存档摘要 (summary) 以及额外信息 (extra) 无此限制
+	# - 一分钟内仅可调用一次（与更新存档共享冷却时间）
+	# - 单个存档文件大小不超过10MB
+	# - 封面大小不超过512KB
+	#
+	# Args:
+	#   archiveName: 存档名称
+	#   archiveSummary: 存档摘要/描述
+	#   archiveExtra: 额外信息
+	#   archivePlaytime: 游戏时长（秒）
+	#   archiveFilePath: 存档文件路径
+	#   archiveCoverPath: 存档封面路径（可选）
+	#
+	# Triggers:
+	#   onCreateArchiveSuccess: 创建成功
+	#   onCreateArchiveFailed: 创建失败
+	if not singleton: return
+	var coverPath = archiveCoverPath if archiveCoverPath else ""
+	singleton.createArchive(archiveName, archiveSummary, archiveExtra, archivePlaytime, archiveFilePath, coverPath)
+
+func getArchiveList() -> void:
+	# 获取当前用户的存档列表
+	#
+	# Triggers:
+	#   onGetArchiveListSuccess: 获取成功，参数为存档列表数组
+	#   onGetArchiveListFailed: 获取失败
+	if not singleton: return
+	singleton.getArchiveList()
+
+func getArchiveData(archiveUuid: String, archiveFileId: String) -> void:
+	# 下载指定的存档文件
+	#
+	# Args:
+	#   archiveUuid: 存档UUID
+	#   archiveFileId: 存档文件ID
+	#
+	# Triggers:
+	#   onGetArchiveDataSuccess: 下载成功，参数包含Base64编码的存档数据
+	#   onGetArchiveDataFailed: 下载失败
+	if not singleton: return
+	singleton.getArchiveData(archiveUuid, archiveFileId)
+
+func updateArchive(archiveUuid: String, archiveName: String, archiveSummary: String, 
+				   archiveExtra: String, archivePlaytime: int, archiveFilePath: String, 
+				   archiveCoverPath: String = "") -> void:
+	# 更新指定的存档文件
+	#
+	# 注意：
+	# - 存档名称仅支持【英文/数字/下划线/中划线】，不支持中文
+	# - 存档摘要 (summary) 以及额外信息 (extra) 无此限制
+	# - 一分钟内仅可调用一次（与创建存档共享冷却时间）
+	# - 单个存档文件大小不超过10MB
+	# - 封面大小不超过512KB
+	#
+	# Args:
+	#   archiveUuid: 存档UUID
+	#   archiveName: 存档名称
+	#   archiveSummary: 存档摘要/描述
+	#   archiveExtra: 额外信息
+	#   archivePlaytime: 游戏时长（秒）
+	#   archiveFilePath: 新的存档文件路径
+	#   archiveCoverPath: 新的存档封面路径（可选）
+	#
+	# Triggers:
+	#   onUpdateArchiveSuccess: 更新成功
+	#   onUpdateArchiveFailed: 更新失败
+	if not singleton: return
+	var coverPath = archiveCoverPath if archiveCoverPath else ""
+	singleton.updateArchive(archiveUuid, archiveName, archiveSummary, archiveExtra, archivePlaytime, archiveFilePath, coverPath)
+
+func deleteArchive(archiveUuid: String) -> void:
+	# 删除指定的存档文件
+	#
+	# Args:
+	#   archiveUuid: 存档UUID
+	#
+	# Triggers:
+	#   onDeleteArchiveSuccess: 删除成功
+	#   onDeleteArchiveFailed: 删除失败
+	if not singleton: return
+	singleton.deleteArchive(archiveUuid)
+
+func getArchiveCover(archiveUuid: String, archiveFileId: String) -> void:
+	# 获取指定存档的封面图片
+	#
+	# Args:
+	#   archiveUuid: 存档UUID
+	#   archiveFileId: 存档文件ID
+	#
+	# Triggers:
+	#   onGetArchiveCoverSuccess: 获取成功，参数包含Base64编码的封面数据
+	#   onGetArchiveCoverFailed: 获取失败
+	if not singleton: return
+	singleton.getArchiveCover(archiveUuid, archiveFileId)
+
+# ==================== 云存档辅助方法 ====================
+
+func saveArchiveToFile(archiveData: Dictionary, filePath: String) -> int:
+	# 将从云端下载的存档数据保存到本地文件
+	#
+	# Args:
+	#   archiveData: 从 onGetArchiveDataSuccess 回调中获取的数据
+	#   filePath: 要保存的本地文件路径
+	#
+	# Returns:
+	#   Error code (OK if successful)
+	if not archiveData.has("data"):
+		return ERR_INVALID_DATA
+	
+	var base64_data = archiveData.data
+	var decoded_data = Marshalls.base64_to_raw(base64_data)
+	
+	var file = File.new()
+	var err = file.open(filePath, File.WRITE)
+	if err != OK:
+		return err
+	
+	file.store_buffer(decoded_data)
+	file.close()
+	return OK
+
+func loadArchiveFromFile(filePath: String) -> String:
+	# 从本地文件加载存档数据，返回可用于上传的文件路径
+	#
+	# Args:
+	#   filePath: 本地存档文件路径
+	#
+	# Returns:
+	#   文件路径字符串（用于传递给 createArchive 或 updateArchive）
+	return filePath
+
+func saveArchiveCoverToFile(coverData: Dictionary, filePath: String) -> int:
+	# 将从云端下载的封面数据保存到本地文件
+	#
+	# Args:
+	#   coverData: 从 onGetArchiveCoverSuccess 回调中获取的数据
+	#   filePath: 要保存的本地文件路径
+	#
+	# Returns:
+	#   Error code (OK if successful)
+	if not coverData.has("data"):
+		return ERR_INVALID_DATA
+	
+	var base64_data = coverData.data
+	var decoded_data = Marshalls.base64_to_raw(base64_data)
+	
+	var file = File.new()
+	var err = file.open(filePath, File.WRITE)
+	if err != OK:
+		return err
+	
+	file.store_buffer(decoded_data)
+	file.close()
+	return OK
+
+func getArchiveCoverAsTexture(coverData: Dictionary) -> ImageTexture:
+	# 将封面数据转换为 ImageTexture 对象
+	#
+	# Args:
+	#   coverData: 从 onGetArchiveCoverSuccess 回调中获取的数据
+	#
+	# Returns:
+	#   ImageTexture 对象，如果失败返回 null
+	if not coverData.has("data"):
+		return null
+	
+	var base64_data = coverData.data
+	var decoded_data = Marshalls.base64_to_raw(base64_data)
+	
+	var image = Image.new()
+	var err = image.load_png_from_buffer(decoded_data)
+	if err != OK:
+		# 尝试加载为 JPG
+		err = image.load_jpg_from_buffer(decoded_data)
+		if err != OK:
+			return null
+	
+	var texture = ImageTexture.new()
+	texture.create_from_image(image)
+	return texture
