@@ -1074,7 +1074,7 @@ public class Godot3TapTap extends GodotPlugin {
      */
     @UsedByGodot
     public void createArchive(String archiveName, String archiveSummary, String archiveExtra,
-                              long archivePlaytime, String archiveFilePath, @Nullable String archiveCoverPath) {
+                              int archivePlaytime, String archiveFilePath, @Nullable String archiveCoverPath) {
         runOnMainThread(() -> {
             try {
                 // 使用Builder模式创建元数据
@@ -1082,7 +1082,7 @@ public class Godot3TapTap extends GodotPlugin {
                         .setName(archiveName)
                         .setSummary(archiveSummary)
                         .setExtra(archiveExtra)
-                        .setPlaytime((int) archivePlaytime)
+                        .setPlaytime(archivePlaytime)
                         .build();
 
                 // 创建请求回调
@@ -1184,7 +1184,11 @@ public class Godot3TapTap extends GodotPlugin {
                             for (ArchiveData archive : archiveList) {
                                 jsonArray.put(createArchiveDataJson(archive));
                             }
-                            emitSignal("onGetArchiveListSuccess", jsonArray.toString());
+                            // Wrap the array in a dictionary for consistent signal interface
+                            JSONObject result = new JSONObject();
+                            result.put("archives", jsonArray);
+                            result.put("count", archiveList.size());
+                            emitSignal("onGetArchiveListSuccess", result.toString());
                         } catch (JSONException e) {
                             Log.e("TapSDKBridge", "Failed to create archive list JSON", e);
                             emitSignal("onGetArchiveListFailed", "{\"error\":\"JSON creation failed\"}");
@@ -1325,7 +1329,7 @@ public class Godot3TapTap extends GodotPlugin {
      */
     @UsedByGodot
     public void updateArchive(String archiveUuid, String archiveName, String archiveSummary,
-                              String archiveExtra, long archivePlaytime, String archiveFilePath,
+                              String archiveExtra, int archivePlaytime, String archiveFilePath,
                               @Nullable String archiveCoverPath) {
         runOnMainThread(() -> {
             try {
@@ -1334,7 +1338,7 @@ public class Godot3TapTap extends GodotPlugin {
                         .setName(archiveName)
                         .setSummary(archiveSummary)
                         .setExtra(archiveExtra)
-                        .setPlaytime((int) archivePlaytime)
+                        .setPlaytime(archivePlaytime)
                         .build();
 
                 TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {

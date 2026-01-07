@@ -812,8 +812,10 @@ func createArchive(archiveName: String, archiveSummary: String, archiveExtra: St
 	#   onCreateArchiveSuccess: 创建成功
 	#   onCreateArchiveFailed: 创建失败
 	if not singleton: return
+	var globalizedFilePath = ProjectSettings.globalize_path(archiveFilePath)
 	var coverPath = archiveCoverPath if archiveCoverPath else ""
-	singleton.createArchive(archiveName, archiveSummary, archiveExtra, archivePlaytime, archiveFilePath, coverPath)
+	var globalizedCoverPath = ProjectSettings.globalize_path(coverPath) if coverPath else ""
+	singleton.createArchive(archiveName, archiveSummary, archiveExtra, archivePlaytime, globalizedFilePath, globalizedCoverPath)
 
 func getArchiveList() -> void:
 	# 获取当前用户的存档列表
@@ -862,8 +864,10 @@ func updateArchive(archiveUuid: String, archiveName: String, archiveSummary: Str
 	#   onUpdateArchiveSuccess: 更新成功
 	#   onUpdateArchiveFailed: 更新失败
 	if not singleton: return
+	var globalizedFilePath = ProjectSettings.globalize_path(archiveFilePath)
 	var coverPath = archiveCoverPath if archiveCoverPath else ""
-	singleton.updateArchive(archiveUuid, archiveName, archiveSummary, archiveExtra, archivePlaytime, archiveFilePath, coverPath)
+	var globalizedCoverPath = ProjectSettings.globalize_path(coverPath) if coverPath else ""
+	singleton.updateArchive(archiveUuid, archiveName, archiveSummary, archiveExtra, archivePlaytime, globalizedFilePath, globalizedCoverPath)
 
 func deleteArchive(archiveUuid: String) -> void:
 	# 删除指定的存档文件
