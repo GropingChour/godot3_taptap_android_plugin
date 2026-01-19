@@ -19,7 +19,13 @@ import com.taptap.payment.iap.api.FinishPurchaseParams;
 import com.taptap.payment.iap.api.bean.Purchase;
 import com.taptap.payment.protocol.bean.TapPaymentResult;
 
+import com.sygames.godot3taptap.cloudsave.*;
+
+import com.taptap.sdk.cloudsave.ArchiveData;
+import com.taptap.sdk.cloudsave.ArchiveMetadata;
+import com.taptap.sdk.cloudsave.TapTapCloudSave;
 import com.taptap.sdk.compliance.TapTapCompliance;
+import com.taptap.sdk.core.TapTapLanguage;
 import com.taptap.sdk.core.TapTapRegion;
 import com.taptap.sdk.core.TapTapSdk;
 import com.taptap.sdk.core.TapTapSdkOptions;
@@ -38,6 +44,8 @@ import com.taptap.sdk.cloudsave.internal.TapCloudSaveRequestCallback;
 import com.taptap.sdk.cloudsave.ArchiveMetadata;
 import com.taptap.sdk.cloudsave.ArchiveData;
 
+import com.sygames.godot3taptap.cloudsave.*;
+
 import org.godotengine.godot.Godot;
 import org.godotengine.godot.plugin.GodotPlugin;
 import org.godotengine.godot.plugin.SignalInfo;
@@ -48,6 +56,14 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -56,14 +72,13 @@ import java.util.Objects;
 import java.util.Set;
 
 import android.util.Base64;
-
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-
-import android.content.Context;
-import android.content.Intent;
 import android.app.Activity;
+import android.content.Intent;
+import android.content.Context;
+
+import java.io.InputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 
 /**
  * Godot3TapTap - TapTap SDK for Godot 3.x
@@ -209,13 +224,13 @@ public class Godot3TapTap extends GodotPlugin {
                 new SignalInfo("onCreateArchiveFailed", String.class),
                 new SignalInfo("onGetArchiveListSuccess", String.class),
                 new SignalInfo("onGetArchiveListFailed", String.class),
-                new SignalInfo("onGetArchiveDataSuccess", String.class),
-                new SignalInfo("onGetArchiveDataFailed", String.class),
+                new SignalInfo("onDownloadArchiveDataSuccess", String.class),
+                new SignalInfo("onDownloadArchiveDataFailed", String.class),
                 new SignalInfo("onUpdateArchiveSuccess", String.class),
                 new SignalInfo("onUpdateArchiveFailed", String.class),
                 new SignalInfo("onDeleteArchiveSuccess", String.class),
                 new SignalInfo("onDeleteArchiveFailed", String.class),
-                new SignalInfo("onGetArchiveCoverSuccess", String.class),
+                new SignalInfo("onGetArchiveCoverSuccess", byte[].class),
                 new SignalInfo("onGetArchiveCoverFailed", String.class)
         );
     }
@@ -1047,7 +1062,55 @@ public class Godot3TapTap extends GodotPlugin {
         runOnUiThread(() -> Toast.makeText(getActivity(), text, Toast.LENGTH_SHORT).show());
     }
 
+    /**
+     * 发送信号到 Godot（供回调类使用）
+     * 这是对 protected emitSignal 的公共包装
+     */
+    public void emitGodotSignal(String signalName, Object... args) {
+        emitSignal(signalName, args);
+    }
+
     // ==================== 云存档相关方法 ====================
+    // 回调类已移至 com.sygames.godot3taptap.cloudsave 包
+
+    /**
+     * 从 Godot Dictionary 构建 ArchiveMetadata
+     * 
+     * @param metadata Dictionary 包含以下字段：
+     *                 - name: 存档名称（String）
+     *                 - summary: 存档摘要/描述（String，可选）
+     *                 - extra: 额外信息（String，可选）
+     *                 - playtime: 游戏时长/秒（int，可选，默认0）
+     * @return ArchiveMetadata 对象
+     */
+    private ArchiveMetadata buildArchiveMetadata(org.godotengine.godot.Dictionary metadata) {
+        ArchiveMetadata.Builder builder = new ArchiveMetadata.Builder();
+        
+        // name 是必需字段
+        if (metadata.containsKey("name")) {
+            builder.setName((String) metadata.get("name"));
+        } else {
+            throw new IllegalArgumentException("Archive metadata must contain 'name' field");
+        }
+        
+        // 可选字段
+        if (metadata.containsKey("summary")) {
+            builder.setSummary((String) metadata.get("summary"));
+        }
+        
+        if (metadata.containsKey("extra")) {
+            builder.setExtra((String) metadata.get("extra"));
+        }
+        
+        if (metadata.containsKey("playtime")) {
+            Object playtime = metadata.get("playtime");
+            if (playtime instanceof Integer) {
+                builder.setPlaytime((Integer) playtime);
+            }
+        }
+        
+        return builder.build();
+    }
 
     /**
      * 创建游戏存档并上传云端
@@ -1060,87 +1123,58 @@ public class Godot3TapTap extends GodotPlugin {
      * - 封面大小不超过512KB
      * <p>
      *
-     * @param archiveName        存档名称
-     * @param archiveSummary     存档摘要/描述
-     * @param archiveExtra       额外信息
-     * @param archivePlaytime    游戏时长（秒）
-     * @param archiveFilePath    存档文件路径
-     * @param archiveCoverPath   存档封面路径（可选，可为null）
-     *                           <p>
-     *                           触发信号：
-     *                           - onCreateArchiveSuccess: 创建成功，参数为存档信息的JSON字符串
-     *                           - onCreateArchiveFailed: 创建失败，参数为错误信息的JSON字符串
+     * @param metadata         存档元数据，Dictionary 包含字段：
+     *                         - name: 存档名称（必填）
+     *                         - summary: 存档摘要/描述（可选）
+     *                         - extra: 额外信息（可选）
+     *                         - playtime: 游戏时长/秒（可选，默认0）
+     * @param archiveFilePath  存档文件路径
+     * @param archiveCoverPath 存档封面路径（可选，可为null）
+     *                         <p>
+     *                         触发信号：
+     *                         - onCreateArchiveSuccess: 创建成功，参数为存档信息的JSON字符串
+     *                         - onCreateArchiveFailed: 创建失败，参数为错误信息的JSON字符串
      * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#创建存档">创建存档文档</a>
      */
     @UsedByGodot
-    public void createArchive(String archiveName, String archiveSummary, String archiveExtra,
-                              int archivePlaytime, String archiveFilePath, @Nullable String archiveCoverPath) {
+    public void createArchive(org.godotengine.godot.Dictionary metadata, String archiveFilePath, 
+                              @Nullable String archiveCoverPath) {
         runOnMainThread(() -> {
+            String tempZipPath = null;
             try {
-                // 使用Builder模式创建元数据
-                ArchiveMetadata metadata = new ArchiveMetadata.Builder()
-                        .setName(archiveName)
-                        .setSummary(archiveSummary)
-                        .setExtra(archiveExtra)
-                        .setPlaytime(archivePlaytime)
-                        .build();
+                // 检查路径是否为目录，如果是则先压缩
+                File archiveFile = new File(archiveFilePath);
+                String actualFilePath = archiveFilePath;
 
-                // 创建请求回调
-                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
-                    @Override
-                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("code", errorCode);
-                            json.put("message", errorMessage);
-                            emitSignal("onCreateArchiveFailed", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
-                            emitSignal("onCreateArchiveFailed", "{\"error\":\"" + errorMessage + "\"}");
-                        }
+                if (archiveFile.isDirectory()) {
+                    Log.d("TapSDKBridge", "Archive path is a directory, creating zip file");
+                    tempZipPath = archiveFilePath + ".cloudsave.zip";
+                    if (zipDirectory(archiveFilePath, tempZipPath)) {
+                        actualFilePath = tempZipPath;
+                    } else {
+                        emitSignal("onCreateArchiveFailed", "{\"error\":\"Failed to compress directory\"}");
+                        return;
                     }
+                }
 
-                    @Override
-                    public void onArchiveCreated(@NonNull ArchiveData archive) {
-                        try {
-                            JSONObject json = createArchiveDataJson(archive);
-                            emitSignal("onCreateArchiveSuccess", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create archive JSON", e);
-                            emitSignal("onCreateArchiveFailed", "{\"error\":\"JSON creation failed\"}");
-                        }
-                    }
+                final String finalFilePath = actualFilePath;
+                final String finalTempZipPath = tempZipPath;
 
-                    @Override
-                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in createArchive context");
-                    }
+                // 从 Dictionary 构建元数据
+                ArchiveMetadata archiveMetadata = buildArchiveMetadata(metadata);
 
-                    @Override
-                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in createArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in createArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in createArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in createArchive context");
-                    }
-                };
-
-                TapTapCloudSave.createArchive(metadata, archiveFilePath, archiveCoverPath, callback);
+                CreateArchiveCallback callback = new CreateArchiveCallback(this, finalTempZipPath);
+                TapTapCloudSave.createArchive(archiveMetadata, finalFilePath, archiveCoverPath, callback);
             } catch (Exception e) {
                 Log.e("TapSDKBridge", "Failed to create archive", e);
                 emitSignal("onCreateArchiveFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+                // 清理临时ZIP文件
+                if (tempZipPath != null) {
+                    File tempFile = new File(tempZipPath);
+                    if (tempFile.exists() && !tempFile.delete()) {
+                        Log.w("TapSDKBridge", "Failed to delete temporary zip file: " + tempZipPath);
+                    }
+                }
             }
         });
     }
@@ -1158,64 +1192,7 @@ public class Godot3TapTap extends GodotPlugin {
     public void getArchiveList() {
         runOnMainThread(() -> {
             try {
-                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
-                    @Override
-                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("code", errorCode);
-                            json.put("message", errorMessage);
-                            emitSignal("onGetArchiveListFailed", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
-                            emitSignal("onGetArchiveListFailed", "{\"error\":\"" + errorMessage + "\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveCreated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in getArchiveList context");
-                    }
-
-                    @Override
-                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
-                        try {
-                            JSONArray jsonArray = new JSONArray();
-                            for (ArchiveData archive : archiveList) {
-                                jsonArray.put(createArchiveDataJson(archive));
-                            }
-                            // Wrap the array in a dictionary for consistent signal interface
-                            JSONObject result = new JSONObject();
-                            result.put("archives", jsonArray);
-                            result.put("count", archiveList.size());
-                            emitSignal("onGetArchiveListSuccess", result.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create archive list JSON", e);
-                            emitSignal("onGetArchiveListFailed", "{\"error\":\"JSON creation failed\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in getArchiveList context");
-                    }
-
-                    @Override
-                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in getArchiveList context");
-                    }
-
-                    @Override
-                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in getArchiveList context");
-                    }
-
-                    @Override
-                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in getArchiveList context");
-                    }
-                };
-
+                GetArchiveListCallback callback = new GetArchiveListCallback(this);
                 TapTapCloudSave.getArchiveList(callback);
             } catch (Exception e) {
                 Log.e("TapSDKBridge", "Failed to get archive list", e);
@@ -1225,80 +1202,28 @@ public class Godot3TapTap extends GodotPlugin {
     }
 
     /**
-     * 下载指定的存档文件
+     * 下载存档并解压覆盖本地存档
      * <p>
+     * 此方法会下载云端存档，自动解压并覆盖本地指定路径的存档文件或目录
      *
-     * @param archiveUuid   存档UUID
-     * @param archiveFileId 存档文件ID
-     *                      <p>
-     *                      触发信号：
-     *                      - onGetArchiveDataSuccess: 下载成功，参数为Base64编码的存档数据JSON字符串
-     *                      - onGetArchiveDataFailed: 下载失败，参数为错误信息的JSON字符串
+     * @param archiveUuid      存档UUID
+     * @param archiveFileId    存档文件ID
+     * @param localArchivePath 本地存档路径（文件或目录）
+     *                         <p>
+     *                         触发信号：
+     *                         - onDownloadArchiveDataSuccess: 下载并解压成功，参数为包含路径和大小的JSON字符串
+     *                         - onDownloadArchiveDataFailed: 下载或解压失败，参数为错误信息的JSON字符串
      * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#下载存档">下载存档文档</a>
      */
     @UsedByGodot
-    public void getArchiveData(String archiveUuid, String archiveFileId) {
+    public void downloadArchiveData(String archiveUuid, String archiveFileId, String localArchivePath) {
         runOnMainThread(() -> {
             try {
-                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
-                    @Override
-                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("code", errorCode);
-                            json.put("message", errorMessage);
-                            emitSignal("onGetArchiveDataFailed", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
-                            emitSignal("onGetArchiveDataFailed", "{\"error\":\"" + errorMessage + "\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveCreated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in getArchiveData context");
-                    }
-
-                    @Override
-                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in getArchiveData context");
-                    }
-
-                    @Override
-                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("archiveUuid", archiveUuid);
-                            json.put("archiveFileId", archiveFileId);
-                            json.put("data", Base64.encodeToString(archiveData, Base64.NO_WRAP));
-                            json.put("size", archiveData.length);
-                            emitSignal("onGetArchiveDataSuccess", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create archive data JSON", e);
-                            emitSignal("onGetArchiveDataFailed", "{\"error\":\"JSON creation failed\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in getArchiveData context");
-                    }
-
-                    @Override
-                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in getArchiveData context");
-                    }
-
-                    @Override
-                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in getArchiveData context");
-                    }
-                };
-
+                DownloadArchiveDataCallback callback = new DownloadArchiveDataCallback(this, localArchivePath);
                 TapTapCloudSave.getArchiveData(archiveUuid, archiveFileId, callback);
             } catch (Exception e) {
-                Log.e("TapSDKBridge", "Failed to get archive data", e);
-                emitSignal("onGetArchiveDataFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+                Log.e("TapSDKBridge", "Failed to download archive data", e);
+                emitSignal("onDownloadArchiveDataFailed", "{\"error\":\"" + e.getMessage() + "\"}");
             }
         });
     }
@@ -1314,88 +1239,59 @@ public class Godot3TapTap extends GodotPlugin {
      * - 封面大小不超过512KB
      * <p>
      *
-     * @param archiveUuid        存档UUID
-     * @param archiveName        存档名称
-     * @param archiveSummary     存档摘要/描述
-     * @param archiveExtra       额外信息
-     * @param archivePlaytime    游戏时长（秒）
-     * @param archiveFilePath    新的存档文件路径
-     * @param archiveCoverPath   新的存档封面路径（可选，可为null）
-     *                           <p>
-     *                           触发信号：
-     *                           - onUpdateArchiveSuccess: 更新成功，参数为存档信息的JSON字符串
-     *                           - onUpdateArchiveFailed: 更新失败，参数为错误信息的JSON字符串
+     * @param archiveUuid      存档UUID
+     * @param metadata         存档元数据，Dictionary 包含字段：
+     *                         - name: 存档名称（必填）
+     *                         - summary: 存档摘要/描述（可选）
+     *                         - extra: 额外信息（可选）
+     *                         - playtime: 游戏时长/秒（可选，默认0）
+     * @param archiveFilePath  新的存档文件路径
+     * @param archiveCoverPath 新的存档封面路径（可选，可为null）
+     *                         <p>
+     *                         触发信号：
+     *                         - onUpdateArchiveSuccess: 更新成功，参数为存档信息的JSON字符串
+     *                         - onUpdateArchiveFailed: 更新失败，参数为错误信息的JSON字符串
      * @see <a href="https://developer.taptap.cn/docs/sdk/tap-cloudsave/guide/#更新存档">更新存档文档</a>
      */
     @UsedByGodot
-    public void updateArchive(String archiveUuid, String archiveName, String archiveSummary,
-                              String archiveExtra, int archivePlaytime, String archiveFilePath,
-                              @Nullable String archiveCoverPath) {
+    public void updateArchive(String archiveUuid, org.godotengine.godot.Dictionary metadata,
+                              String archiveFilePath, @Nullable String archiveCoverPath) {
         runOnMainThread(() -> {
+            String tempZipPath = null;
             try {
-                // 使用Builder模式创建元数据
-                ArchiveMetadata metadata = new ArchiveMetadata.Builder()
-                        .setName(archiveName)
-                        .setSummary(archiveSummary)
-                        .setExtra(archiveExtra)
-                        .setPlaytime(archivePlaytime)
-                        .build();
+                // 检查路径是否为目录，如果是则先压缩
+                File archiveFile = new File(archiveFilePath);
+                String actualFilePath = archiveFilePath;
 
-                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
-                    @Override
-                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("code", errorCode);
-                            json.put("message", errorMessage);
-                            emitSignal("onUpdateArchiveFailed", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
-                            emitSignal("onUpdateArchiveFailed", "{\"error\":\"" + errorMessage + "\"}");
-                        }
+                if (archiveFile.isDirectory()) {
+                    Log.d("TapSDKBridge", "Archive path is a directory, creating zip file");
+                    tempZipPath = archiveFilePath + ".cloudsave.zip";
+                    if (zipDirectory(archiveFilePath, tempZipPath)) {
+                        actualFilePath = tempZipPath;
+                    } else {
+                        emitSignal("onUpdateArchiveFailed", "{\"error\":\"Failed to compress directory\"}");
+                        return;
                     }
+                }
 
-                    @Override
-                    public void onArchiveCreated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in updateArchive context");
-                    }
+                final String finalFilePath = actualFilePath;
+                final String finalTempZipPath = tempZipPath;
 
-                    @Override
-                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in updateArchive context");
-                    }
+                // 从 Dictionary 构建元数据
+                ArchiveMetadata archiveMetadata = buildArchiveMetadata(metadata);
 
-                    @Override
-                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in updateArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
-                        try {
-                            JSONObject json = createArchiveDataJson(archive);
-                            emitSignal("onUpdateArchiveSuccess", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create archive JSON", e);
-                            emitSignal("onUpdateArchiveFailed", "{\"error\":\"JSON creation failed\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in updateArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in updateArchive context");
-                    }
-                };
-
-                TapTapCloudSave.updateArchive(archiveUuid, metadata, archiveFilePath, archiveCoverPath, callback);
+                UpdateArchiveCallback callback = new UpdateArchiveCallback(this, finalTempZipPath);
+                TapTapCloudSave.updateArchive(archiveUuid, archiveMetadata, finalFilePath, archiveCoverPath, callback);
             } catch (Exception e) {
                 Log.e("TapSDKBridge", "Failed to update archive", e);
                 emitSignal("onUpdateArchiveFailed", "{\"error\":\"" + e.getMessage() + "\"}");
+                // 清理临时ZIP文件
+                if (tempZipPath != null) {
+                    File tempFile = new File(tempZipPath);
+                    if (tempFile.exists() && !tempFile.delete()) {
+                        Log.w("TapSDKBridge", "Failed to delete temporary zip file: " + tempZipPath);
+                    }
+                }
             }
         });
     }
@@ -1415,57 +1311,7 @@ public class Godot3TapTap extends GodotPlugin {
     public void deleteArchive(String archiveUuid) {
         runOnMainThread(() -> {
             try {
-                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
-                    @Override
-                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("code", errorCode);
-                            json.put("message", errorMessage);
-                            emitSignal("onDeleteArchiveFailed", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
-                            emitSignal("onDeleteArchiveFailed", "{\"error\":\"" + errorMessage + "\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveCreated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in deleteArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in deleteArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in deleteArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in deleteArchive context");
-                    }
-
-                    @Override
-                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
-                        try {
-                            JSONObject json = createArchiveDataJson(archive);
-                            emitSignal("onDeleteArchiveSuccess", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create archive JSON", e);
-                            emitSignal("onDeleteArchiveFailed", "{\"error\":\"JSON creation failed\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCoverResult called in deleteArchive context");
-                    }
-                };
-
+                DeleteArchiveCallback callback = new DeleteArchiveCallback(this);
                 TapTapCloudSave.deleteArchive(archiveUuid, callback);
             } catch (Exception e) {
                 Log.e("TapSDKBridge", "Failed to delete archive", e);
@@ -1490,61 +1336,7 @@ public class Godot3TapTap extends GodotPlugin {
     public void getArchiveCover(String archiveUuid, String archiveFileId) {
         runOnMainThread(() -> {
             try {
-                TapCloudSaveRequestCallback callback = new TapCloudSaveRequestCallback() {
-                    @Override
-                    public void onRequestError(int errorCode, @NonNull String errorMessage) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("code", errorCode);
-                            json.put("message", errorMessage);
-                            emitSignal("onGetArchiveCoverFailed", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create error JSON", e);
-                            emitSignal("onGetArchiveCoverFailed", "{\"error\":\"" + errorMessage + "\"}");
-                        }
-                    }
-
-                    @Override
-                    public void onArchiveCreated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveCreated called in getArchiveCover context");
-                    }
-
-                    @Override
-                    public void onArchiveListResult(@NonNull java.util.List<ArchiveData> archiveList) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveListResult called in getArchiveCover context");
-                    }
-
-                    @Override
-                    public void onArchiveDataResult(@NonNull byte[] archiveData) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDataResult called in getArchiveCover context");
-                    }
-
-                    @Override
-                    public void onArchiveUpdated(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveUpdated called in getArchiveCover context");
-                    }
-
-                    @Override
-                    public void onArchiveDeleted(@NonNull ArchiveData archive) {
-                        Log.w("TapSDKBridge", "Unexpected callback: onArchiveDeleted called in getArchiveCover context");
-                    }
-
-                    @Override
-                    public void onArchiveCoverResult(@NonNull byte[] coverData) {
-                        try {
-                            JSONObject json = new JSONObject();
-                            json.put("archiveUuid", archiveUuid);
-                            json.put("archiveFileId", archiveFileId);
-                            json.put("data", Base64.encodeToString(coverData, Base64.NO_WRAP));
-                            json.put("size", coverData.length);
-                            emitSignal("onGetArchiveCoverSuccess", json.toString());
-                        } catch (JSONException e) {
-                            Log.e("TapSDKBridge", "Failed to create cover JSON", e);
-                            emitSignal("onGetArchiveCoverFailed", "{\"error\":\"JSON creation failed\"}");
-                        }
-                    }
-                };
-
+                GetArchiveCoverCallback callback = new GetArchiveCoverCallback(this);
                 TapTapCloudSave.getArchiveCover(archiveUuid, archiveFileId, callback);
             } catch (Exception e) {
                 Log.e("TapSDKBridge", "Failed to get archive cover", e);
@@ -1561,7 +1353,7 @@ public class Godot3TapTap extends GodotPlugin {
      * @return ArchiveData的JSON表示
      * @throws JSONException 如果JSON创建失败
      */
-    private JSONObject createArchiveDataJson(ArchiveData archive) throws JSONException {
+    public JSONObject createArchiveDataJson(ArchiveData archive) throws JSONException {
         JSONObject json = new JSONObject();
         json.put("uuid", archive.getUuid());
         json.put("name", archive.getName());
@@ -1569,13 +1361,248 @@ public class Godot3TapTap extends GodotPlugin {
         json.put("extra", archive.getExtra());
         json.put("playtime", archive.getPlaytime());
         json.put("fileId", archive.getFileId());
-        // 注意：以下字段根据实际SDK API可能需要调整
-        // 如果这些方法不存在，可以省略或使用其他可用的方法
-        // json.put("coverId", archive.getCoverId());
-        // json.put("modifiedAt", archive.getModifiedAt());
-        // json.put("createdAt", archive.getCreatedAt());
-        // json.put("size", archive.getSize());
+        json.put("coverSize", archive.getCoverSize());
+        json.put("createdTime", archive.getCreatedTime());
+        json.put("modifiedTime", archive.getModifiedTime());
+        json.put("saveSize", archive.getSaveSize());
         return json;
+    }
+
+    // ==================== 云存档辅助方法 ====================
+
+    /**
+     * 递归删除文件或目录
+     *
+     * @param fileOrDirectory 要删除的文件或目录
+     */
+    public void deleteRecursive(File fileOrDirectory) {
+        if (fileOrDirectory.isDirectory()) {
+            File[] files = fileOrDirectory.listFiles();
+            if (files != null) {
+                for (File child : files) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        if (!fileOrDirectory.delete()) {
+            Log.w("TapSDKBridge", "Failed to delete: " + fileOrDirectory.getAbsolutePath());
+        }
+    }
+
+    /**
+     * 压缩目录为ZIP文件
+     *
+     * @param sourceDirPath 要压缩的目录路径
+     * @param zipFilePath   输出的ZIP文件路径
+     * @return 压缩是否成功
+     */
+    private boolean zipDirectory(String sourceDirPath, String zipFilePath) {
+        try {
+            File sourceDir = new File(sourceDirPath);
+            if (!sourceDir.exists() || !sourceDir.isDirectory()) {
+                Log.e("TapSDKBridge", "Source directory does not exist or is not a directory: " + sourceDirPath);
+                return false;
+            }
+
+            FileOutputStream fos = new FileOutputStream(zipFilePath);
+            ZipOutputStream zos = new ZipOutputStream(fos);
+
+            // 直接压缩目录内的文件和子目录，不包含源目录本身
+            File[] children = sourceDir.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    zipDirectoryRecursive(child, child.getName(), zos);
+                }
+            }
+
+            zos.close();
+            fos.close();
+
+            Log.d("TapSDKBridge", "Successfully compressed directory: " + sourceDirPath + " to " + zipFilePath);
+            return true;
+        } catch (IOException e) {
+            Log.e("TapSDKBridge", "Failed to compress directory", e);
+            return false;
+        }
+    }
+
+    /**
+     * 递归压缩目录中的文件
+     *
+     * @param fileToZip 要压缩的文件或目录
+     * @param fileName  文件在ZIP中的名称
+     * @param zos       ZIP输出流
+     * @throws IOException 如果IO操作失败
+     */
+    private void zipDirectoryRecursive(File fileToZip, String fileName, ZipOutputStream zos) throws IOException {
+        if (fileToZip.isHidden()) {
+            return;
+        }
+
+        if (fileToZip.isDirectory()) {
+            if (fileName.endsWith("/")) {
+                zos.putNextEntry(new ZipEntry(fileName));
+                zos.closeEntry();
+            } else {
+                zos.putNextEntry(new ZipEntry(fileName + "/"));
+                zos.closeEntry();
+            }
+
+            File[] children = fileToZip.listFiles();
+            if (children != null) {
+                for (File childFile : children) {
+                    zipDirectoryRecursive(childFile, fileName + "/" + childFile.getName(), zos);
+                }
+            }
+            return;
+        }
+
+        FileInputStream fis = new FileInputStream(fileToZip);
+        ZipEntry zipEntry = new ZipEntry(fileName);
+        zos.putNextEntry(zipEntry);
+
+        byte[] buffer = new byte[8192];
+        int length;
+        while ((length = fis.read(buffer)) >= 0) {
+            zos.write(buffer, 0, length);
+        }
+
+        fis.close();
+    }
+
+    /**
+     * 从字节数组解压ZIP到指定目录
+     *
+     * @param zipData ZIP数据字节数组
+     * @param destDirPath 目标目录路径
+     * @return 解压是否成功
+     */
+    public boolean unzipFromBytes(byte[] zipData, String destDirPath) {
+        try {
+            File destDir = new File(destDirPath);
+            if (!destDir.exists()) {
+                destDir.mkdirs();
+            }
+
+            ByteArrayInputStream bais = new ByteArrayInputStream(zipData);
+            ZipInputStream zis = new ZipInputStream(bais);
+            ZipEntry zipEntry = zis.getNextEntry();
+
+            while (zipEntry != null) {
+                File newFile = newFileInDestDir(destDir, zipEntry);
+
+                if (zipEntry.isDirectory()) {
+                    if (!newFile.isDirectory() && !newFile.mkdirs()) {
+                        throw new IOException("Failed to create directory " + newFile);
+                    }
+                } else {
+                    // 确保父目录存在
+                    File parent = newFile.getParentFile();
+                    if (!Objects.requireNonNull(parent).isDirectory() && !parent.mkdirs()) {
+                        throw new IOException("Failed to create directory " + parent);
+                    }
+
+                    // 写入文件内容
+                    FileOutputStream fos = new FileOutputStream(newFile);
+                    byte[] buffer = new byte[8192];
+                    int length;
+                    while ((length = zis.read(buffer)) > 0) {
+                        fos.write(buffer, 0, length);
+                    }
+                    fos.close();
+                }
+
+                zipEntry = zis.getNextEntry();
+            }
+
+            zis.closeEntry();
+            zis.close();
+            bais.close();
+
+            Log.d("TapSDKBridge", "Successfully unzipped from byte array to " + destDirPath);
+            return true;
+        } catch (IOException e) {
+            Log.e("TapSDKBridge", "Failed to unzip from bytes", e);
+            return false;
+        }
+    }
+
+    /**
+     * 解压ZIP文件到指定目录
+     *
+     * @param zipFilePath ZIP文件路径
+     * @param destDirPath 目标目录路径
+     * @return 解压是否成功
+     */
+    public boolean unzipFile(String zipFilePath, String destDirPath) {
+        try {
+            File destDir = new File(destDirPath);
+            if (!destDir.exists()) {
+                destDir.mkdirs();
+            }
+
+            FileInputStream fis = new FileInputStream(zipFilePath);
+            ZipInputStream zis = new ZipInputStream(fis);
+            ZipEntry zipEntry = zis.getNextEntry();
+
+            while (zipEntry != null) {
+                File newFile = newFileInDestDir(destDir, zipEntry);
+
+                if (zipEntry.isDirectory()) {
+                    if (!newFile.isDirectory() && !newFile.mkdirs()) {
+                        throw new IOException("Failed to create directory " + newFile);
+                    }
+                } else {
+                    // 确保父目录存在
+                    File parent = newFile.getParentFile();
+                    if (!Objects.requireNonNull(parent).isDirectory() && !parent.mkdirs()) {
+                        throw new IOException("Failed to create directory " + parent);
+                    }
+
+                    // 写入文件内容
+                    FileOutputStream fos = new FileOutputStream(newFile);
+                    byte[] buffer = new byte[8192];
+                    int length;
+                    while ((length = zis.read(buffer)) > 0) {
+                        fos.write(buffer, 0, length);
+                    }
+                    fos.close();
+                }
+
+                zipEntry = zis.getNextEntry();
+            }
+
+            zis.closeEntry();
+            zis.close();
+            fis.close();
+
+            Log.d("TapSDKBridge", "Successfully unzipped file: " + zipFilePath + " to " + destDirPath);
+            return true;
+        } catch (IOException e) {
+            Log.e("TapSDKBridge", "Failed to unzip file", e);
+            return false;
+        }
+    }
+
+    /**
+     * 安全创建ZIP解压目标文件，防止路径遍历攻击
+     *
+     * @param destinationDir 目标目录
+     * @param zipEntry       ZIP条目
+     * @return 目标文件
+     * @throws IOException 如果路径不安全
+     */
+    private File newFileInDestDir(File destinationDir, ZipEntry zipEntry) throws IOException {
+        File destFile = new File(destinationDir, zipEntry.getName());
+
+        String destDirPath = destinationDir.getCanonicalPath();
+        String destFilePath = destFile.getCanonicalPath();
+
+        if (!destFilePath.startsWith(destDirPath + File.separator)) {
+            throw new IOException("Entry is outside of the target dir: " + zipEntry.getName());
+        }
+
+        return destFile;
     }
 
     /**
